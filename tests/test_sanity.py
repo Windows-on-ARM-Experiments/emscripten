@@ -13,7 +13,7 @@ from pathlib import Path
 from subprocess import PIPE, STDOUT
 
 from common import RunnerCore, path_from_root, env_modify, test_file
-from common import create_file, ensure_dir, make_executable, with_env_modify
+from common import create_file, ensure_dir, make_executable, no_windows, with_env_modify
 from common import parameterized, EMBUILDER
 from tools.config import EM_CONFIG
 from tools.shared import EMCC
@@ -25,7 +25,7 @@ from tools import response_file
 from tools import ports
 
 SANITY_FILE = shared.Cache.get_path('sanity.txt')
-commands = [[EMCC], [path_from_root('tests/runner'), 'blahblah']]
+commands = [[EMCC], [path_from_root(shared.bat_suffix('tests/runner')), 'blahblah']]
 
 
 def restore():
@@ -156,6 +156,8 @@ class sanity(RunnerCore):
       else:
         expected = "could not find the following tests: blahblah"
 
+    print("Command: " + ' '.join(command))
+
     output = self.do(command)
     self.assertContained(expected, output)
     return output
@@ -231,6 +233,7 @@ class sanity(RunnerCore):
         finally:
           try_delete(default_config)
 
+  @no_windows('make_fake_tool() is createing Bash scripts')
   def test_llvm(self):
     LLVM_WARNING = 'LLVM version for clang executable'
 
@@ -244,7 +247,7 @@ class sanity(RunnerCore):
     # Fake a different llvm version
     restore_and_set_up()
     with open(EM_CONFIG, 'a') as f:
-      f.write('LLVM_ROOT = "' + self.in_dir('fake') + '"')
+      f.write('LLVM_ROOT = "' + self.in_dir('fake').replace('\\', '\\\\') + '"')
 
     real_version_x, real_version_y = (int(x) for x in EXPECTED_LLVM_VERSION.split('.'))
     make_fake_llc(self.in_dir('fake', 'llc'), 'wasm32 - WebAssembly 32-bit')
@@ -271,14 +274,15 @@ class sanity(RunnerCore):
   def test_emscripten_root(self):
     # The correct path
     restore_and_set_up()
-    add_to_config("EMSCRIPTEN_ROOT = '%s'" % path_from_root())
+    add_to_config("EMSCRIPTEN_ROOT = '%s'" % path_from_root().replace('\\', '\\\\'))
     self.check_working(EMCC)
 
     # The correct path with extra stuff
     restore_and_set_up()
-    add_to_config("EMSCRIPTEN_ROOT = '%s'" % (path_from_root() + os.path.sep))
+    add_to_config("EMSCRIPTEN_ROOT = '%s'" % ((path_from_root() + os.path.sep).replace('\\', '\\\\')))
     self.check_working(EMCC)
 
+  @no_windows('the test is createing Bash scripts')
   def test_node(self):
     NODE_WARNING = 'node version appears too old'
     NODE_WARNING_2 = 'cannot check node version'
@@ -293,7 +297,7 @@ class sanity(RunnerCore):
     # Fake a different node version
     restore_and_set_up()
     with open(EM_CONFIG, 'a') as f:
-      f.write('NODE_JS = "' + self.in_dir('fake', 'nodejs') + '"')
+      f.write('NODE_JS = "' + self.in_dir('fake', 'nodejs').replace('\\', '\\\\') + '"')
 
     ensure_dir('fake')
 
@@ -429,6 +433,7 @@ fi
     self.assertIn(SANITY_MESSAGE, output)
     self.assertCacheEmpty()
 
+  @no_windows('make_fake_tool() is createing Bash scripts')
   def test_cache_clearing_auto(self):
     # Changing LLVM_ROOT, even without altering .emscripten, clears the cache
     restore_and_set_up()
@@ -659,20 +664,21 @@ fi
       build()
       test()
 
+  @no_windows('make_fake_tool() is createing Bash scripts')
   def test_vanilla(self):
     restore_and_set_up()
     self.clear_cache()
 
     def make_fake(report):
       with open(EM_CONFIG, 'a') as f:
-        f.write('LLVM_ROOT = "' + self.in_dir('fake', 'bin') + '"\n')
+        f.write('LLVM_ROOT = "' + self.in_dir('fake', 'bin').replace('\\', '\\\\') + '"\n')
         # BINARYEN_ROOT needs to exist in the config, even though this test
         # doesn't actually use it.
-        f.write('BINARYEN_ROOT= "%s"\n' % self.in_dir('fake', 'bin'))
+        f.write('BINARYEN_ROOT= "%s"\n' % self.in_dir('fake', 'bin').replace('\\', '\\\\'))
 
-      make_fake_clang(self.in_dir('fake', 'bin', 'clang'), EXPECTED_LLVM_VERSION)
-      make_fake_llc(self.in_dir('fake', 'bin', 'llc'), report)
-      make_fake_tool(self.in_dir('fake', 'bin', 'wasm-ld'), EXPECTED_LLVM_VERSION)
+      make_fake_clang(self.in_dir('fake', 'bin', shared.exe_suffix('clang')), EXPECTED_LLVM_VERSION)
+      make_fake_llc(self.in_dir('fake', 'bin', shared.exe_suffix('llc')), report)
+      make_fake_tool(self.in_dir('fake', 'bin', shared.exe_suffix('wasm-ld')), EXPECTED_LLVM_VERSION)
 
     # fake llc output
 
@@ -720,10 +726,11 @@ fi
     self.run_process([EMBUILDER, 'build', 'libemmalloc', '--lto'])
     self.assertExists(os.path.join(config.CACHE, 'sysroot', 'lib', 'wasm32-emscripten', 'lto'))
 
+  @no_windows('make_fake_tool() is createing Bash scripts')
   def test_binaryen_version(self):
     restore_and_set_up()
     with open(EM_CONFIG, 'a') as f:
-      f.write('\nBINARYEN_ROOT = "' + self.in_dir('fake') + '"')
+      f.write('\nBINARYEN_ROOT = "' + self.in_dir('fake').replace('\\', '\\\\') + '"')
 
     make_fake_tool(self.in_dir('fake', 'bin', 'wasm-opt'), 'foo')
     self.check_working([EMCC, test_file('hello_world.c')], 'error parsing binaryen version (wasm-opt version foo). Please check your binaryen installation')
