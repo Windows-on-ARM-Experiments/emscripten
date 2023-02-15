@@ -1591,14 +1591,22 @@ def phase_setup(options, state, newargs):
     settings.DISABLE_EXCEPTION_CATCHING = 0
 
   if settings.WASM_EXCEPTIONS:
-    if 'DISABLE_EXCEPTION_CATCHING' in user_settings:
-      exit_with_error('DISABLE_EXCEPTION_CATCHING is not compatible with -fwasm-exceptions')
-    if 'DISABLE_EXCEPTION_THROWING' in user_settings:
-      exit_with_error('DISABLE_EXCEPTION_THROWING is not compatible with -fwasm-exceptions')
-    if 'ASYNCIFY' in user_settings and user_settings['ASYNCIFY'] == '1':
-      diagnostics.warning('emcc', 'ASYNCIFY=1 is not compatible with -fwasm-exceptions. Parts of the program that mix ASYNCIFY and exceptions will not compile.')
+    if user_settings.get('DISABLE_EXCEPTION_CATCHING') == '0':
+      exit_with_error('DISABLE_EXCEPTION_CATCHING=0 is not compatible with -fwasm-exceptions')
+    if user_settings.get('DISABLE_EXCEPTION_THROWING') == '0':
+      exit_with_error('DISABLE_EXCEPTION_THROWING=0 is not compatible with -fwasm-exceptions')
+    # -fwasm-exceptions takes care of enabling them, so users aren't supposed to
+    # pass them explicitly, regardless of their values
+    if 'DISABLE_EXCEPTION_CATCHING' in user_settings or 'DISABLE_EXCEPTION_THROWING' in user_settings:
+      diagnostics.warning('emcc', 'You no longer need to pass DISABLE_EXCEPTION_CATCHING or DISABLE_EXCEPTION_THROWING when using Wasm exceptions')
     settings.DISABLE_EXCEPTION_CATCHING = 1
     settings.DISABLE_EXCEPTION_THROWING = 1
+
+    if user_settings.get('ASYNCIFY') == '1':
+      diagnostics.warning('emcc', 'ASYNCIFY=1 is not compatible with -fwasm-exceptions. Parts of the program that mix ASYNCIFY and exceptions will not compile.')
+
+    if user_settings.get('SUPPORT_LONGJMP') == 'emscripten':
+      exit_with_error('SUPPORT_LONGJMP=emscripten is not compatible with -fwasm-exceptions')
 
   if settings.DISABLE_EXCEPTION_THROWING and not settings.DISABLE_EXCEPTION_CATCHING:
     exit_with_error("DISABLE_EXCEPTION_THROWING was set (probably from -fno-exceptions) but is not compatible with enabling exception catching (DISABLE_EXCEPTION_CATCHING=0). If you don't want exceptions, set DISABLE_EXCEPTION_CATCHING to 1; if you do want exceptions, don't link with -fno-exceptions")
@@ -1606,24 +1614,27 @@ def phase_setup(options, state, newargs):
   if settings.MEMORY64:
     diagnostics.warning('experimental', '-sMEMORY64 is still experimental. Many features may not work.')
 
-  # SUPPORT_LONGJMP=1 means the default SjLj handling mechanism, currently
-  # 'emscripten'
-  if settings.SUPPORT_LONGJMP == 1:
-    settings.SUPPORT_LONGJMP = 'emscripten'
-
   # Wasm SjLj cannot be used with Emscripten EH
   if settings.SUPPORT_LONGJMP == 'wasm':
     # DISABLE_EXCEPTION_THROWING is 0 by default for Emscripten EH throwing, but
     # Wasm SjLj cannot be used with Emscripten EH. We error out if
     # DISABLE_EXCEPTION_THROWING=0 is explicitly requested by the user;
     # otherwise we disable it here.
-    default_setting('DISABLE_EXCEPTION_THROWING', 1)
-    if not settings.DISABLE_EXCEPTION_THROWING:
-      exit_with_error('SUPPORT_LONGJMP=wasm cannot be used with DISABLE_EXCEPTION_CATCHING=0')
+    if user_settings.get('DISABLE_EXCEPTION_THROWING') == '0':
+      exit_with_error('SUPPORT_LONGJMP=wasm cannot be used with DISABLE_EXCEPTION_THROWING=0')
     # We error out for DISABLE_EXCEPTION_CATCHING=0, because it is 1 by default
     # and this can be 0 only if the user specifies so.
-    if not settings.DISABLE_EXCEPTION_CATCHING:
+    if user_settings.get('DISABLE_EXCEPTION_CATCHING') == '0':
       exit_with_error('SUPPORT_LONGJMP=wasm cannot be used with DISABLE_EXCEPTION_CATCHING=0')
+    default_setting('DISABLE_EXCEPTION_THROWING', 1)
+
+  # SUPPORT_LONGJMP=1 means the default SjLj handling mechanism, which is 'wasm'
+  # if Wasm EH is used and 'emscripten' otherwise.
+  if settings.SUPPORT_LONGJMP == 1:
+    if settings.WASM_EXCEPTIONS:
+      settings.SUPPORT_LONGJMP = 'wasm'
+    else:
+      settings.SUPPORT_LONGJMP = 'emscripten'
 
   return (newargs, input_files)
 
@@ -1648,7 +1659,7 @@ def setup_pthreads(target):
     '_emscripten_thread_free_data',
     'emscripten_main_browser_thread_id',
     'emscripten_main_thread_process_queued_calls',
-    'emscripten_run_in_main_runtime_thread_js',
+    '_emscripten_run_in_main_runtime_thread_js',
     'emscripten_stack_set_limits',
   ]
 
@@ -1897,7 +1908,7 @@ def phase_linker_setup(options, state, newargs):
     # For a command we always want EXIT_RUNTIME=1
     # For a reactor we always want EXIT_RUNTIME=0
     if 'EXIT_RUNTIME' in user_settings:
-      exit_with_error('Explictly setting EXIT_RUNTIME not compatible with STANDALONE_WASM.  EXIT_RUNTIME will always be True for programs (with a main function) and False for reactors (not main function).')
+      exit_with_error('Explicitly setting EXIT_RUNTIME not compatible with STANDALONE_WASM.  EXIT_RUNTIME will always be True for programs (with a main function) and False for reactors (not main function).')
     settings.EXIT_RUNTIME = settings.EXPECT_MAIN
     settings.IGNORE_MISSING_MAIN = 0
     # the wasm must be runnable without the JS, so there cannot be anything that
@@ -2816,13 +2827,25 @@ def phase_linker_setup(options, state, newargs):
   if settings.ASSERTIONS:
     if 'EXCEPTION_STACK_TRACES' in user_settings and not settings.EXCEPTION_STACK_TRACES:
       exit_with_error('EXCEPTION_STACK_TRACES cannot be disabled when ASSERTIONS are enabled')
-    default_setting('EXCEPTION_STACK_TRACES', 1)
-  if settings.EXCEPTION_STACK_TRACES and settings.WASM_EXCEPTIONS:
-    settings.EXPORTED_FUNCTIONS += ['___cpp_exception']
+    if not settings.DISABLE_EXCEPTION_CATCHING or settings.WASM_EXCEPTIONS:
+      settings.EXCEPTION_STACK_TRACES = 1
+
+  if settings.EXCEPTION_STACK_TRACES:
+    # If the user explicitly gave EXCEPTION_STACK_TRACES=1 without enabling EH,
+    # errors out.
+    if settings.DISABLE_EXCEPTION_CATCHING and not settings.WASM_EXCEPTIONS:
+      exit_with_error('EXCEPTION_STACK_TRACES requires either of -fexceptions or -fwasm-exceptions')
+    # EXCEPTION_STACK_TRACES implies EXPORT_EXCEPTION_HANDLING_HELPERS
     settings.EXPORT_EXCEPTION_HANDLING_HELPERS = True
+    if settings.WASM_EXCEPTIONS:
+      settings.EXPORTED_FUNCTIONS += ['___cpp_exception']
 
   # Make `getExceptionMessage` and other necessary functions available for use.
   if settings.EXPORT_EXCEPTION_HANDLING_HELPERS:
+    # If the user explicitly gave EXPORT_EXCEPTION_HANDLING_HELPERS=1 without
+    # enagling EH, errors out.
+    if settings.DISABLE_EXCEPTION_CATCHING and not settings.WASM_EXCEPTIONS:
+      exit_with_error('EXPORT_EXCEPTION_HANDLING_HELPERS requires either of -fexceptions or -fwasm-exceptions')
     # We also export refcount increasing and decreasing functions because if you
     # catch an exception, be it an Emscripten exception or a Wasm exception, in
     # JS, you may need to manipulate the refcount manually not to leak memory.

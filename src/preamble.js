@@ -471,8 +471,19 @@ function abort(what) {
   // TODO(https://github.com/google/closure-compiler/pull/3913): Remove if/when upstream closure gets fixed.
 #if WASM_EXCEPTIONS == 1
   // See above, in the meantime, we resort to wasm code for trapping.
-  ___trap();
-#else
+  //
+  // In case abort() is called before the module is initialized, Module['asm']
+  // and its exported '__trap' function is not available, in which case we throw
+  // a RuntimeError.
+  //
+  // We trap instead of throwing RuntimeError to prevent infinite-looping in
+  // Wasm EH code (because RuntimeError is considered as a foreign exception and
+  // caught by 'catch_all'), but in case throwing RuntimeError is fine because
+  // the module has not even been instantiated, even less running.
+  if (runtimeInitialized) {
+    ___trap();
+  }
+#endif
   /** @suppress {checkTypes} */
   var e = new WebAssembly.RuntimeError(what);
 
@@ -483,7 +494,6 @@ function abort(what) {
   // in code paths apart from instantiation where an exception is expected
   // to be thrown when abort is called.
   throw e;
-#endif
 }
 
 #include "memoryprofiler.js"
@@ -791,7 +801,7 @@ function instantiateSync(file, info) {
 }
 #endif
 
-#if LOAD_SOURCE_MAP || USE_OFFSET_CONVERTER
+#if expectToReceiveOnModule('instantiateWasm') && (LOAD_SOURCE_MAP || USE_OFFSET_CONVERTER)
 // When using postMessage to send an object, it is processed by the structured clone algorithm.
 // The prototype, and hence methods, on that object is then lost. This function adds back the lost prototype.
 // This does not work with nested objects that has prototypes, but it suffices for WasmSourceMap and WasmOffsetConverter.
@@ -1040,6 +1050,7 @@ function createWasm() {
     removeRunDependency('wasm-instantiate');
 #endif // ~USE_PTHREADS
 
+    return exports;
   }
   // wait for the pthread pool (if any)
   addRunDependency('wasm-instantiate');
@@ -1073,6 +1084,7 @@ function createWasm() {
   }
 #endif // WASM_ASYNC_COMPILATION
 
+#if expectToReceiveOnModule('instantiateWasm')
   // User shell pages can write their own Module.instantiateWasm = function(imports, successCallback) callback
   // to manually instantiate the Wasm module themselves. This allows pages to run the instantiation parallel
   // to any other async startup actions they are performing.
@@ -1095,11 +1107,7 @@ function createWasm() {
     wasmSourceMap = resetPrototype(WasmSourceMap, Module['wasmSourceMapData']);
 #endif
     try {
-      var exports = Module['instantiateWasm'](info, receiveInstance);
-#if ASYNCIFY
-      exports = Asyncify.instrumentWasmExports(exports);
-#endif
-      return exports;
+      return Module['instantiateWasm'](info, receiveInstance);
     } catch(e) {
       err('Module.instantiateWasm callback failed with error: ' + e);
       #if MODULARIZE
@@ -1110,6 +1118,7 @@ function createWasm() {
       #endif
     }
   }
+#endif
 
 #if WASM_ASYNC_COMPILATION
 #if RUNTIME_LOGGING
@@ -1128,14 +1137,13 @@ function createWasm() {
 #else
   var result = instantiateSync(wasmBinaryFile, info);
 #if USE_PTHREADS || MAIN_MODULE
-  receiveInstance(result[0], result[1]);
+  return receiveInstance(result[0], result[1]);
 #else
   // TODO: Due to Closure regression https://github.com/google/closure-compiler/issues/3193,
   // the above line no longer optimizes out down to the following line.
   // When the regression is fixed, we can remove this if/else.
-  receiveInstance(result[0]);
+  return receiveInstance(result[0]);
 #endif
-  return Module['asm']; // exports were assigned here
 #endif
 }
 
